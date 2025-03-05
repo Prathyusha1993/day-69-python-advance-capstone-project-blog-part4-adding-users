@@ -1,4 +1,6 @@
 from datetime import date
+from email.policy import default
+
 from flask import Flask, abort, render_template, redirect, url_for, flash, request
 from flask_bootstrap import Bootstrap5
 from flask_ckeditor import CKEditor
@@ -10,7 +12,7 @@ from sqlalchemy import Integer, String, Text, ForeignKey
 from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
 # Import your forms from the forms.py
-from forms import CreatePostForm, RegisterForm, LoginForm
+from forms import CreatePostForm, RegisterForm, LoginForm, CommentForm
 
 
 '''
@@ -35,17 +37,35 @@ Bootstrap5(app)
 login_manager = LoginManager()
 login_manager.init_app(app)
 
+# for adding profile images to comment section
+gravatar = Gravatar(app,
+                    size=100,
+                    default='retro',
+                    rating='g',
+                    force_default=False,
+                    force_lower=False,
+                    use_ssl=False,
+                    base_url=None)
 # CREATE DATABASE
 class Base(DeclarativeBase):
     pass
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///posts.db'
-# app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
 db = SQLAlchemy(model_class=Base)
 db.init_app(app)
 
 @login_manager.user_loader
 def load_user(user_id):
     return db.get_or_404(User, user_id)
+
+# TODO: Create a User table for all your registered users.
+class User(UserMixin, db.Model):
+    __tablename__='users'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(100), unique=True)
+    password: Mapped[str] = mapped_column(String(100))
+    name: Mapped[str] = mapped_column(String(100))
+    posts = relationship('BlogPost', back_populates='author')
+    comments = relationship('Comment', back_populates='comment_author')
 
 # CONFIGURE TABLES
 class BlogPost(db.Model):
@@ -56,18 +76,19 @@ class BlogPost(db.Model):
     date: Mapped[str] = mapped_column(String(250), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     img_url: Mapped[str] = mapped_column(String(250), nullable=False)
-    author_id = db.Column(db.Integer, db.ForeignKey('users.id'))
+    author_id: Mapped[int] = mapped_column(Integer, db.ForeignKey("users.id"))
     author = relationship('User', back_populates='posts')
+    comments=relationship('Comment', back_populates='parent_post')
 
-
-# TODO: Create a User table for all your registered users. 
-class User(UserMixin, db.Model):
-    __tablename__='users'
+class Comment(db.Model):
+    __tablename__='comments'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    email: Mapped[str] = mapped_column(String(100), unique=True)
-    password: Mapped[str] = mapped_column(String(100))
-    name: Mapped[str] = mapped_column(String(100))
-    posts = relationship('BlogPost', back_populates='author')
+    author_id: Mapped[int] = mapped_column(Integer, db.ForeignKey('users.id'))
+    text: Mapped[str] = mapped_column(Text,nullable=False)
+    comment_author = relationship('User', back_populates='comments')
+    post_id: Mapped[int] = mapped_column(Integer, db.ForeignKey('blog_posts.id'))
+    parent_post = relationship('BlogPost', back_populates='comments')
+
 
 with app.app_context():
     db.create_all()
@@ -98,7 +119,7 @@ def register():
         )
         db.session.add(new_user)
         db.session.commit()
-        load_user(new_user)
+        login_user(new_user)
         return redirect(url_for('get_all_posts'))
     return render_template("register.html", form=register_form, logged_in=current_user.is_authenticated)
 
@@ -108,10 +129,10 @@ def register():
 def login():
     login_form = LoginForm()
     if login_form.validate_on_submit():
-        email=login_form.email.data,
+        email=login_form.email.data
         password=login_form.password.data
 
-        result = db.session.execute(db.select(User).where(User.email) == email)
+        result = db.session.execute(db.select(User).where(User.email == email))
         user = result.scalar()
 
         # email doesnt exists nad password incorrect case
@@ -143,10 +164,24 @@ def get_all_posts():
 
 
 # TODO: Allow logged-in users to comment on posts
-@app.route("/post/<int:post_id>")
+@login_required
+@app.route("/post/<int:post_id>", methods=['GET', 'POST'])
 def show_post(post_id):
     requested_post = db.get_or_404(BlogPost, post_id)
-    return render_template("post.html", post=requested_post)
+    comment_form = CommentForm()
+    if comment_form.validate_on_submit():
+        if not current_user.is_authenticated:
+            flash('You need to login or register to comment')
+            return redirect(url_for('login'))
+        new_comment = Comment(
+            text=comment_form.comment_text.data,
+            comment_author=current_user,
+            parent_post=requested_post
+        )
+        db.session.add(new_comment)
+        db.session.commit()
+        return redirect(url_for('show_post', post_id=post_id))
+    return render_template("post.html", post=requested_post, form=comment_form)
 
 def admin_only(f):
     @wraps(f)
