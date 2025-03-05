@@ -1,5 +1,5 @@
 from datetime import date
-from flask import Flask, abort, render_template, redirect, url_for, flash
+from flask import Flask, abort, render_template, redirect, url_for, flash, request
 from flask_bootstrap import Bootstrap5
 from flask_ckeditor import CKEditor
 from flask_gravatar import Gravatar
@@ -76,6 +76,14 @@ with app.app_context():
 def register():
     register_form = RegisterForm()
     if register_form.validate_on_submit():
+        email = register_form.email.data
+        result = db.session.execute(db.select(User).where(User.email == email))
+        user = result.scalar()
+        if user:
+            # aleardy exists
+            flash("You've already signed up with that email, log in instead.!")
+            return redirect(url_for('login'))
+
         hash_and_salted_password = generate_password_hash(
             register_form.password.data,
             method='pbkdf2:sha256',
@@ -90,7 +98,7 @@ def register():
         db.session.commit()
         load_user(new_user)
         return redirect(url_for('get_all_posts'))
-    return render_template("register.html", form=register_form)
+    return render_template("register.html", form=register_form, logged_in=current_user.is_authenticated)
 
 
 # TODO: Retrieve a user from the database based on their email. 
@@ -104,15 +112,24 @@ def login():
         result = db.session.execute(db.select(User).where(User.email) == email)
         user = result.scalar()
 
-        if user and check_password_hash(user.password, password):
+        # email doesnt exists nad password incorrect case
+        if not user:
+            flash('That email doesnt exists, please try again.')
+            return redirect(url_for('login'))
+        # check stored password hash against entered password hashed
+        elif not check_password_hash(user.password, password):
+            flash('Password Incorrect, please try again.')
+            return redirect(url_for('login'))
+        else:
             login_user(user)
             return redirect(url_for('get_all_posts'))
 
-    return render_template("login.html", form=login_form)
+    return render_template("login.html", form=login_form, logged_in=current_user.is_authenticated)
 
 
 @app.route('/logout')
 def logout():
+    logout_user()
     return redirect(url_for('get_all_posts'))
 
 
@@ -120,7 +137,7 @@ def logout():
 def get_all_posts():
     result = db.session.execute(db.select(BlogPost))
     posts = result.scalars().all()
-    return render_template("index.html", all_posts=posts)
+    return render_template("index.html", all_posts=posts, logged_in=current_user.is_authenticated)
 
 
 # TODO: Allow logged-in users to comment on posts
