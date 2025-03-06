@@ -1,14 +1,12 @@
 from datetime import date
-from email.policy import default
-
 from flask import Flask, abort, render_template, redirect, url_for, flash, request
 from flask_bootstrap import Bootstrap5
 from flask_ckeditor import CKEditor
 from flask_gravatar import Gravatar
-from flask_login import UserMixin, login_user, LoginManager, current_user, logout_user, login_required
+from flask_login import UserMixin, login_user, LoginManager, current_user, logout_user
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import relationship, DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import Integer, String, Text, ForeignKey
+from sqlalchemy import Integer, String, Text
 from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
 # Import your forms from the forms.py
@@ -53,6 +51,11 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///posts.db'
 db = SQLAlchemy(model_class=Base)
 db.init_app(app)
 
+@app.before_request
+def log_request_info():
+    print("Before request function triggered")  # Debugging
+    print(f"URL: {request.url} | Method: {request.method}")
+
 @login_manager.user_loader
 def load_user(user_id):
     return db.get_or_404(User, user_id)
@@ -83,9 +86,12 @@ class BlogPost(db.Model):
 class Comment(db.Model):
     __tablename__='comments'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    # Child relationship:"users.id" The users refers to the tablename of the User class.
+    # "comments" refers to the comments property in the User class.
     author_id: Mapped[int] = mapped_column(Integer, db.ForeignKey('users.id'))
-    text: Mapped[str] = mapped_column(Text,nullable=False)
     comment_author = relationship('User', back_populates='comments')
+    # Child Relationship to the BlogPosts
     post_id: Mapped[int] = mapped_column(Integer, db.ForeignKey('blog_posts.id'))
     parent_post = relationship('BlogPost', back_populates='comments')
 
@@ -93,61 +99,82 @@ class Comment(db.Model):
 with app.app_context():
     db.create_all()
 
+# Create an admin-only decorator
+def admin_only(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # if id is not equal to 1 then abort with 403 error
+        if current_user.id != 1:
+            return abort(403)
+        # otherwise continue with route function
+        return f(*args, **kwargs)
+    return decorated_function
+
 
 # TODO: Use Werkzeug to hash the user's password when creating a new user.
 @app.route('/register', methods=['GET', 'POST'])
 def register():
-    register_form = RegisterForm()
-    if register_form.validate_on_submit():
-        email = register_form.email.data
-        result = db.session.execute(db.select(User).where(User.email == email))
-        user = result.scalar()
-        if user:
-            # aleardy exists
-            flash("You've already signed up with that email, log in instead.!")
-            return redirect(url_for('login'))
+    try:
+        print(request.url)
+        register_form = RegisterForm()
+        if register_form.validate_on_submit():
+            email = register_form.email.data
+            result = db.session.execute(db.select(User).where(User.email == email))
+            user = result.scalar()
+            if user:
+                # aleardy exists
+                flash("You've already signed up with that email, log in instead.!")
+                return redirect(url_for('login'))
 
-        hash_and_salted_password = generate_password_hash(
-            register_form.password.data,
-            method='pbkdf2:sha256',
-            salt_length=8
-        )
-        new_user = User(
-            email=register_form.email.data,
-            name=register_form.name.data,
-            password=hash_and_salted_password
-        )
-        db.session.add(new_user)
-        db.session.commit()
-        login_user(new_user)
-        return redirect(url_for('get_all_posts'))
-    return render_template("register.html", form=register_form, logged_in=current_user.is_authenticated)
+            hash_and_salted_password = generate_password_hash(
+                register_form.password.data,
+                method='pbkdf2:sha256',
+                salt_length=8
+            )
+            new_user = User(
+                email=register_form.email.data,
+                name=register_form.name.data,
+                password=hash_and_salted_password
+            )
+            db.session.add(new_user)
+            db.session.commit()
+            login_user(new_user)
+            return redirect(url_for('get_all_posts'))
+        return render_template("register.html", form=register_form, logged_in=current_user.is_authenticated)
+    except Exception as e:
+        print(f"Error: {e}")  # Print error details
+        return "An error occurred, check the logs.", 500
 
 
 # TODO: Retrieve a user from the database based on their email. 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    login_form = LoginForm()
-    if login_form.validate_on_submit():
-        email=login_form.email.data
-        password=login_form.password.data
+    try:
+        print(request.url)
+        login_form = LoginForm()
+        if login_form.validate_on_submit():
+            email=login_form.email.data
+            password=login_form.password.data
 
-        result = db.session.execute(db.select(User).where(User.email == email))
-        user = result.scalar()
+            result = db.session.execute(db.select(User).where(User.email == email))
+            user = result.scalar()
 
-        # email doesnt exists nad password incorrect case
-        if not user:
-            flash('That email doesnt exists, please try again.')
-            return redirect(url_for('login'))
-        # check stored password hash against entered password hashed
-        elif not check_password_hash(user.password, password):
-            flash('Password Incorrect, please try again.')
-            return redirect(url_for('login'))
-        else:
-            login_user(user)
-            return redirect(url_for('get_all_posts'))
+            # email doesnt exists nad password incorrect case
+            if not user:
+                flash('That email doesnt exists, please try again.')
+                return redirect(url_for('login'))
+            # check stored password hash against entered password hashed
+            elif not check_password_hash(user.password, password):
+                flash('Password Incorrect, please try again.')
+                return redirect(url_for('login'))
+            else:
+                login_user(user)
+                return redirect(url_for('get_all_posts'))
 
-    return render_template("login.html", form=login_form, logged_in=current_user.is_authenticated)
+        return render_template("login.html", form=login_form, logged_in=current_user.is_authenticated)
+    except Exception as e:
+        print(f"Error: {e}")  # Print error details
+        return "An error occurred, check the logs.", 500
 
 
 @app.route('/logout')
@@ -155,16 +182,24 @@ def logout():
     logout_user()
     return redirect(url_for('get_all_posts'))
 
+# @app.route('/')
+# def home():
+#     return 'hello world!'
+
 
 @app.route('/')
 def get_all_posts():
-    result = db.session.execute(db.select(BlogPost))
-    posts = result.scalars().all()
-    return render_template("index.html", all_posts=posts, logged_in=current_user.is_authenticated)
+    try:
+        print(request.url)
+        result = db.session.execute(db.select(BlogPost))
+        posts = result.scalars().all()
+        return render_template("index.html", all_posts=posts, logged_in=current_user.is_authenticated)
+    except Exception as e:
+        print(f"Error: {e}")  # Print error details
+        return "An error occurred, check the logs.", 500
 
 
 # TODO: Allow logged-in users to comment on posts
-@login_required
 @app.route("/post/<int:post_id>", methods=['GET', 'POST'])
 def show_post(post_id):
     requested_post = db.get_or_404(BlogPost, post_id)
@@ -180,18 +215,10 @@ def show_post(post_id):
         )
         db.session.add(new_comment)
         db.session.commit()
-        return redirect(url_for('show_post', post_id=post_id))
+        # return redirect(url_for('show_post', post_id=post_id))
     return render_template("post.html", post=requested_post, form=comment_form)
 
-def admin_only(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        # if id is not equal to 1 then abort with 403 error
-        if current_user.id != 1:
-            return abort(403)
-        # otherwise continue with route function
-        return f(*args, **kwargs)
-    return decorated_function
+
 
 
 # TODO: Use a decorator so only an admin user can create a new post
@@ -258,4 +285,4 @@ def contact():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5002)
+    app.run(debug=True, use_reloader=False)
